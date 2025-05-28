@@ -1,0 +1,124 @@
+# .github/workflows/deploy-ecs.yml
+name: Deploy to ECS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies (AWS CLI, jq, gettext)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq gettext
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install --update
+
+
+      - name: Configure AWS Credentials
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          aws configure set region $AWS_REGION
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+      
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Set Image Tag
+        run: |
+          echo "IMAGE_TAG_ECR=v1.${{ github.run_number }}" >> $GITHUB_ENV
+
+
+      - name: Build and Push ECR Image
+        env:
+          REPOSITORY_ECR_URL: ${{ secrets.REPOSITORY_ECR_URL }}
+          IMAGE_TAG_ECR: ${{ env.IMAGE_TAG_ECR }}
+          IMAGE_NAME: ${{ secrets.IMAGE_NAME }}
+        run: |
+          docker build -t $REPOSITORY_ECR_URL:$IMAGE_NAME-$IMAGE_TAG_ECR .
+          docker push $REPOSITORY_ECR_URL:$IMAGE_NAME-$IMAGE_TAG_ECR
+
+
+      - name: Get Latest Image Tag from ECR
+        id: ecr
+        env:
+          REPO_NAME: ${{ secrets.REPO_NAME }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          IMAGE_TAG=$(aws ecr describe-images \
+            --repository-name $REPO_NAME \
+            --region $AWS_REGION \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+            --output text)
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+      
+      - name: Set Environment Variables
+        run: |
+          echo "CONTAINER_NAME=${{ secrets.CONTAINER_NAME }}" >> $GITHUB_ENV
+          echo "REPOSITORY_ECR_URL=${{ secrets.REPOSITORY_ECR_URL }}" >> $GITHUB_ENV
+          echo "TASK_DEF_NAME=${{ secrets.TASK_DEF_NAME }}" >> $GITHUB_ENV
+          echo "ID_ACC_AWS=${{ secrets.ID_ACC_AWS }}" >> $GITHUB_ENV
+          echo "ARN_ROLE_ECS=${{ secrets.ARN_ROLE_ECS }}" >> $GITHUB_ENV
+          echo "LOG_GROUP=${{ secrets.LOG_GROUP }}" >> $GITHUB_ENV
+          echo "AWS_REGION=${{ secrets.AWS_REGION }}" >> $GITHUB_ENV
+          echo "LOG_STREAM_PREFIX=${{ secrets.LOG_STREAM_PREFIX }}" >> $GITHUB_ENV
+          echo "VOLUME_NAME=${{ secrets.VOLUME_NAME }}" >> $GITHUB_ENV
+          echo "CONTAINER_PATH=${{ secrets.CONTAINER_PATH }}" >> $GITHUB_ENV
+          echo "NETWORK_MODE=${{ secrets.NETWORK_MODE }}" >> $GITHUB_ENV
+          echo "IMAGE_NAME=${{ secrets.IMAGE_NAME }}" >> $GITHUB_ENV
+          echo "CPU=${{ secrets.CPU }}" >> $GITHUB_ENV
+          echo "MEMORY=${{ secrets.MEMORY }}" >> $GITHUB_ENV
+
+
+
+      - name: Generate Task Definition JSON
+        env:
+          IMAGE: ${{ env.IMAGE_TAG_ECR }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PSW: ${{ secrets.DB_PSW }}
+          PORT: ${{ secrets.PORT }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_USER: ${{ secrets.DB_USER }}
+        run: |
+          envsubst < task_definition.tpl.json > task-definition.json
+          cat task-definition.json
+
+
+      - name: Register New Task Definition
+        id: taskdef
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          VERSION=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition.json \
+            --region $AWS_REGION | jq -r '.taskDefinition.revision')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+
+      - name: Wait Before Update
+        run: sleep 10
+
+      - name: Update ECS Service
+        env:
+          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+          SERVICE_NAME: ${{ secrets.SERVICE_NAME }}
+          TASK_DEF_NAME: ${{ secrets.TASK_DEF_NAME }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws ecs update-service \
+            --cluster $CLUSTER_NAME \
+            --service $SERVICE_NAME \
+            --task-definition "$TASK_DEF_NAME:${{ steps.taskdef.outputs.version }}" \
+            --region $AWS_REGION

@@ -1,0 +1,37 @@
+{
+    "containerDefinitions": [
+        {
+            "name": "${CONTAINER_NAME}",
+            "image": "${REPOSITORY_ECR_URL}:${IMAGE_NAME}-${IMAGE}",
+            "cpu": 0,
+            "portMappings": [
+                {
+                    "containerPort": 5432,
+                    "hostPort": 0,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [],
+            "secrets": [],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "${LOG_GROUP}",
+                    "awslogs-region": "${AWS_REGION}",
+                    "awslogs-stream-prefix": "${LOG_STREAM_PREFIX}"
+                }
+            },
+            "systemControls": []
+        }
+    ],
+    "volumes": [],
+    "family": "${TASK_DEF_NAME}",
+    "taskRoleArn": "${ARN_ROLE_ECS}",
+    "executionRoleArn": "${ARN_ROLE_ECS}",
+    "networkMode": "${NETWORK_MODE}",
+    "cpu": "${CPU}",
+    "memory": "${MEMORY}"
+}
